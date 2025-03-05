@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Living Mandelbrot</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: Arial, sans-serif;
+    }
+    canvas {
+      display: block;
+      cursor: crosshair;
+      box-shadow: 0 0 30px rgba(128, 0, 255, 0.7);
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: relative;
+    }
+    .info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: white;
+      background-color: rgba(0, 0, 0, 0.7);
+      padding: 10px;
+      border-radius: 5px;
+      font-size: 14px;
+      z-index: 10;
+    }
+    .controls {
+      position: absolute;
+      bottom: 10px;
+      display: flex;
+      gap: 10px;
+      z-index: 10;
+    }
+    button {
+      background-color: rgba(128, 0, 255, 0.7);
+      border: none;
+      color: white;
+      padding: 8px 16px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+      font-size: 14px;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background-color 0.3s;
+    }
+    button:hover {
+      background-color: rgba(160, 32, 240, 0.9);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <canvas id="mandelbrotCanvas"></canvas>
+    <div class="info">👆 Click to zoom in, right-click to zoom out</div>
+    <div class="controls">
+      <button id="resetBtn">Reset View</button>
+      <button id="toggleFlowBtn">Toggle Flow</button>
+      <button id="toggleRaysBtn">Toggle Rays</button>
+    </div>
+  </div>
+
+  <script>
+    /**
+     * Living Mandelbrot Set
+     * An animated implementation that brings the fractal to life
+     */
+    
+    // Canvas setup
+    const canvas = document.getElementById('mandelbrotCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Set canvas size
+    function setCanvasSize() {
+      canvas.width = Math.min(window.innerWidth - 40, 800);
+      canvas.height = Math.min(window.innerHeight - 100, 600);
+    }
+    setCanvasSize();
+    
+    // Configuration parameters
+    const MAX_ITERATIONS = 120;
+    const ZOOM_FACTOR = 2.5;
+    
+    // Animation and effect controls
+    let enableFlow = true;
+    let enableRays = true;
+    let animationFrame = 0;
+    let animationSpeed = 0.05;
+    let rayIntensity = 0.6;
+    let flowIntensity = 0.8;
+    let time = 0;
+    
+    // View state
+    let viewState = {
+      centerX: -0.5,  // Center of view in complex plane
+      centerY: 0,
+      scale: 3.5,     // How much of the complex plane to show
+      isRendering: false,
+      imageData: null
+    };
+    
+    // Initialize dimensions and add event listeners
+    function init() {
+      // Create ImageData object for direct pixel manipulation
+      viewState.imageData = ctx.createImageData(canvas.width, canvas.height);
+      
+      // Add event listeners for interaction
+      canvas.addEventListener('click', handleZoomIn);
+      canvas.addEventListener('contextmenu', handleZoomOut);
+      window.addEventListener('resize', handleResize);
+      document.getElementById('resetBtn').addEventListener('click', handleReset);
+      document.getElementById('toggleFlowBtn').addEventListener('click', toggleFlow);
+      document.getElementById('toggleRaysBtn').addEventListener('click', toggleRays);
+      
+      // Start animation loop
+      animate();
+    }
+    
+    /**
+     * Determines if a complex point belongs to the Mandelbrot set
+     * @param {number} cReal - Real part of complex number
+     * @param {number} cImag - Imaginary part of complex number
+     * @param {number} timeOffset - Time-based offset for animation
+     * @returns {Object} - Information about iterations and escape values
+     */
+    function computeMandelbrot(cReal, cImag, timeOffset) {
+      // Starting values: z = 0
+      let zReal = 0;
+      let zImag = 0;
+      let zRealSquared = 0;
+      let zImagSquared = 0;
+      let iteration = 0;
+      
+      // For smooth coloring
+      let smoothValue = 0;
+      let lastZMag = 0;
+      
+      // Optional time-based variation
+      const timeInfluence = enableFlow ? Math.sin(timeOffset * 0.1) * 0.02 : 0;
+      
+      // While |z|² <= 4 and we haven't reached max iterations
+      while (zRealSquared + zImagSquared <= 4 && iteration < MAX_ITERATIONS) {
+        // z = z² + c with slight time variation for flowing effect
+        zImag = 2 * zReal * zImag + cImag + (enableFlow ? timeInfluence * zImag : 0);
+        zReal = zRealSquared - zImagSquared + cReal + (enableFlow ? timeInfluence * zReal : 0);
+        
+        // Cache squares for performance and next iteration check
+        zRealSquared = zReal * zReal;
+        zImagSquared = zImag * zImag;
+        
+        // Track magnitude for smooth coloring
+        lastZMag = Math.sqrt(zRealSquared + zImagSquared);
+        
+        iteration++;
+      }
+      
+      // Calculate smooth iteration count for better coloring
+      if (iteration < MAX_ITERATIONS) {
+        // Smooth iteration formula
+        smoothValue = iteration + 1 - Math.log(Math.log(lastZMag)) / Math.log(2);
+      } else {
+        smoothValue = iteration;
+      }
+      
+      // Return detailed information for coloring
+      return {
+        iterations: iteration,
+        smooth: smoothValue,
+        escaped: iteration < MAX_ITERATIONS,
+        finalZ: { real: zReal, imag: zImag },
+        magnitude: lastZMag,
+        angle: Math.atan2(zImag, zReal)
+      };
+    }
+    
+    /**
+     * Maps canvas coordinates to complex plane coordinates
+     * @param {number} canvasX - X position on canvas
+     * @param {number} canvasY - Y position on canvas
+     * @returns {Object} - Complex coordinate {real, imag}
+     */
+    function canvasToComplex(canvasX, canvasY) {
+      const aspectRatio = canvas.width / canvas.height;
+      const real = viewState.centerX + (canvasX - canvas.width / 2) * viewState.scale / canvas.width;
+      // Adjust y-scaling for aspect ratio
+      const imag = viewState.centerY + (canvasY - canvas.height / 2) * viewState.scale / (canvas.width / aspectRatio);
+      return { real, imag };
+    }
+    
+    /**
+     * Renders a single frame of the animated Mandelbrot set
+     * @param {number} timestamp - Animation timestamp
+     */
+    function renderFrame(timestamp) {
+      // Get data array for direct pixel manipulation
+      const data = viewState.imageData.data;
+      time = timestamp * 0.001; // Convert to seconds
+      
+      // Process all pixels
+      for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+          // Convert canvas coordinates to complex plane
+          const complex = canvasToComplex(x, y);
+          
+          // Calculate time offset based on position for wave-like effect
+          const positionFactor = (x / canvas.width + y / canvas.height) * 2;
+          const timeOffset = time + positionFactor;
+          
+          // Compute Mandelbrot value with animation
+          const result = computeMandelbrot(complex.real, complex.imag, timeOffset);
+          
+          // Calculate pixel index (4 values per pixel: r,g,b,a)
+          const pixelIndex = (y * canvas.width + x) * 4;
+          
+          // Color the pixel based on result
+          if (!result.escaped) {
+            // Points in the set are black with optional pulsing
+            const pulseIntensity = enableFlow ? Math.sin(time * 2) * 0.1 + 0.1 : 0;
+            data[pixelIndex] = Math.round(pulseIntensity * 40);
+            data[pixelIndex + 1] = Math.round(pulseIntensity * 10);
+            data[pixelIndex + 2] = Math.round(pulseIntensity * 50);
+          } else {
+            // Points outside get animated coloring
+            
+            // Base color calculation using smooth value and time
+            const smoothColor = result.smooth;
+            const normalized = smoothColor / MAX_ITERATIONS;
+            
+            // Calculate angle-based ray effect
+            let rayEffect = 0;
+            if (enableRays) {
+              // Create rays emanating from the fractal
+              const angle = result.angle;
+              rayEffect = Math.pow(Math.abs(Math.sin((angle * 10) + time * 3)), 3) * rayIntensity;
+            }
+            
+            // Time-based flow effect
+            const flowEffect = enableFlow ? 
+              Math.sin(normalized * 20 + time * 2) * 0.15 * flowIntensity : 0;
+            
+            // Combine effects
+            const hue = (normalized * 360 + time * 15) % 360;
+            const saturation = 0.8 + flowEffect;
+            const value = 0.7 + rayEffect + flowEffect * 0.3;
+            
+            // Convert to RGB
+            const [r, g, b] = hsvToRgb(hue / 360, saturation, value);
+            
+            data[pixelIndex] = r;
+            data[pixelIndex + 1] = g;
+            data[pixelIndex + 2] = b;
+          }
+          
+          // Full opacity
+          data[pixelIndex + 3] = 255;
+        }
+      }
+      
+      // Update canvas with the processed frame
+      ctx.putImageData(viewState.imageData, 0, 0);
+    }
+    
+    /**
+     * Animation loop
+     * @param {number} timestamp - Animation timestamp
+     */
+    function animate(timestamp) {
+      // Render current frame
+      renderFrame(timestamp);
+      
+      // Continue animation loop
+      animationFrame = requestAnimationFrame(animate);
+    }
+    
+    /**
+     * Converts HSV color to RGB
+     * @param {number} h - Hue (0-1)
+     * @param {number} s - Saturation (0-1)
+     * @param {number} v - Value (0-1)
+     * @returns {Array} - RGB values as [r,g,b] (0-255)
+     */
+    function hsvToRgb(h, s, v) {
+      let r, g, b;
+      
+      const i = Math.floor(h * 6);
+      const f = h * 6 - i;
+      const p = v * (1 - s);
+      const q = v * (1 - f * s);
+      const t = v * (1 - (1 - f) * s);
+      
+      switch (i % 6) {
+        case 0: r = v; g = t; b = p; break;
+        case 1: r = q; g = v; b = p; break;
+        case 2: r = p; g = v; b = t; break;
+        case 3: r = p; g = q; b = v; break;
+        case 4: r = t; g = p; b = v; break;
+        case 5: r = v; g = p; b = q; break;
+      }
+      
+      return [
+        Math.floor(r * 255),
+        Math.floor(g * 255),
+        Math.floor(b * 255)
+      ];
+    }
+    
+    /**
+     * Handles zoom in action on mouse click
+     * @param {Event} event - Mouse event
+     */
+    function handleZoomIn(event) {
+      event.preventDefault();
+      
+      // Get click position relative to canvas
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      
+      // Convert to complex coordinates
+      const target = canvasToComplex(x, y);
+      
+      // Zoom in towards clicked point
+      viewState.centerX = target.real;
+      viewState.centerY = target.imag;
+      viewState.scale /= ZOOM_FACTOR;
+      
+      // Create new ImageData since we might need different dimensions
+      viewState.imageData = ctx.createImageData(canvas.width, canvas.height);
+    }
+    
+    /**
+     * Handles zoom out action on right click
+     * @param {Event} event - Mouse event
+     */
+    function handleZoomOut(event) {
+      event.preventDefault();
+      
+      // Zoom out from current center
+      viewState.scale *= ZOOM_FACTOR;
+      
+      // Create new ImageData since we might need different dimensions
+      viewState.imageData = ctx.createImageData(canvas.width, canvas.height);
+    }
+    
+    /**
+     * Handles window resize event
+     */
+    function handleResize() {
+      setCanvasSize();
+      viewState.imageData = ctx.createImageData(canvas.width, canvas.height);
+    }
+    
+    /**
+     * Resets the view to initial state
+     */
+    function handleReset() {
+      viewState.centerX = -0.5;
+      viewState.centerY = 0;
+      viewState.scale = 3.5;
+      
+      // Create new ImageData since we might need different dimensions
+      viewState.imageData = ctx.createImageData(canvas.width, canvas.height);
+    }
+    
+    /**
+     * Toggles flow animation effect
+     */
+    function toggleFlow() {
+      enableFlow = !enableFlow;
+      document.getElementById('toggleFlowBtn').textContent = enableFlow ? 'Turn Off Flow' : 'Turn On Flow';
+    }
+    
+    /**
+     * Toggles ray animation effect
+     */
+    function toggleRays() {
+      enableRays = !enableRays;
+      document.getElementById('toggleRaysBtn').textContent = enableRays ? 'Turn Off Rays' : 'Turn On Rays';
+    }
+    
+    // Start the application
+    init();
+  </script>
+</body>
+</html>
